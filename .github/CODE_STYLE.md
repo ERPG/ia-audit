@@ -1,0 +1,6 @@
+- React components should be named using PascalCase. The component is named inputComponent instead of InputComponent.
+- useState() is missing an initial value. It should be useState("") to ensure the state is properly initialized.
+- Incorrect Event Handler Naming & Usage
+- Event Handler Naming.
+- Inconsistent Variable Naming.
+- Component Naming Convention.
