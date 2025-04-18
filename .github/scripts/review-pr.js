@@ -14,6 +14,10 @@ const prNumber = process.env.PR_NUMBER;
 
 console.log(`Reviewing PR #${prNumber} in ${owner}/${repo}...`);
 
+// Public inference models endpoints
+// https://api-inference.huggingface.co/models/google/flan-t5-base
+// https://api-inference.huggingface.co/models/facebook/opt-iml-1.3b
+
 async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 };
@@ -62,7 +66,7 @@ async function callHuggingFaceAPI(octokit, pr, file, guidelines, retries = 0) {
     console.log(`Analyzing file: ${file.filename}`);
 
     const response = await axios.post(
-      'https://api-inference.huggingface.co/models/bigcode/starcoder',
+      'https://api-inference.huggingface.co/models/google/flan-t5-base',
       {
         inputs: `
           Review this code and provide specific line-by-line comments:
