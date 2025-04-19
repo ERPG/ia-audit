@@ -5,7 +5,7 @@ on:
     types: [opened, synchronize]
 
 jobs:
-  review-pr:
+  review:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,7 +21,7 @@ jobs:
         run: npm install axios dotenv @octokit/core
 
       - name: Run PR Review Script
-        run: node .github/scripts/review-pr.js
+        run: node .github/scripts/review.js
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}

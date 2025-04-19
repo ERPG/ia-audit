@@ -5,7 +5,7 @@ const axios = require('axios');
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 5000;
 
-const excludedFiles = ['package-lock.json', 'package.json', 'review-pr.js'];
+const excludedFiles = ['package-lock.json', 'package.json', 'review.js'];
 const fileExtensions = ['js', 'ts', 'jsx', 'tsx'];
 
 const owner = process.env.OWNER;
@@ -39,15 +39,15 @@ function getDiffPosition(diff, filePath, lineNumber) {
       position = 1;
       continue;
     }
-    
+
     if (!line.startsWith('-')) {
       currentLine++;
     }
-    
+
     if (currentLine === lineNumber) {
       return position;
     }
-    
+
     position++;
   }
   return null;
@@ -130,7 +130,7 @@ async function reviewPR() {
 
   const { Octokit } = await import('@octokit/core');
   const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
-  
+
   const guidelines = fs.readFileSync('.github/CODE_STYLE.md', 'utf-8');
 
   const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
@@ -162,8 +162,11 @@ async function reviewPR() {
     files.map(async (file, index) => {
       console.log(`Processing file #${index + 1}: ${file.filename}`);
 
-      if (excludedFiles.includes(file.filename)) {
-        console.log(`File ${file.filename} is excluded from review.`);
+      const filename = file.filename;
+      const base = path.basename(filename);
+
+      if (excludedFiles.includes(filename) || excludedFiles.includes(base)) {
+        console.log(`File ${filename} is excluded from review.`);
         return null;
       }
 
