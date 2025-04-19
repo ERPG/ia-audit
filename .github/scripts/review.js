@@ -76,20 +76,23 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
   // Helper to review one hunk with retries
   const reviewHunk = async (hunk, attempt = 0) => {
     const prompt = `
-    You are an expert reviewer. Here is a chunk of the git diff for ${file.filename}:
+      You are an expert code reviewer.
+      **Strictly** output _only_ a JSON array of comments—no explanation, no extra text.
 
-    ${hunk}
+      Here is a chunk of the git diff for ${file.filename}:
 
-    Follow these coding guidelines when you review:
-    
-    ${guidelines}
-    
-    Please return a JSON array like:
-    [
-      {"line": 12, "comment": "Missing initial value for useState."},
-      …
-    ]
-          `;
+      ${hunk}
+
+      Follow these coding guidelines when you review:
+
+      ${guidelines}
+
+      **Output format**:
+      [
+        {"line": 12, "comment": "Missing initial value for useState."},
+        …
+      ]
+    `;
     try {
       const res = await axios.post(
         'https://api-inference.huggingface.co/models/Salesforce/codegen-350M-multi',
@@ -102,10 +105,20 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
           timeout: 120000
         }
       );
-      const text = Array.isArray(res.data)
+      
+      const raw = Array.isArray(res.data)
         ? res.data[0].generated_text
         : res.data.generated_text;
-      return JSON.parse(text);
+
+      // Find the JSON array start/end
+      const start = raw.indexOf('[');
+      const end = raw.lastIndexOf(']') + 1;
+      const jsonStr = start !== -1 && end !== -1
+        ? raw.slice(start, end)
+        : raw;
+
+      return JSON.parse(jsonStr);
+
     } catch (err) {
       if (attempt < MAX_RETRIES) {
         console.log(`Hunk review failed, retry ${attempt + 1}/${MAX_RETRIES}…`);
@@ -159,7 +172,7 @@ async function reviewPR() {
   const diffContent = diffResponse.data;
   pr.diff = diffContent;
 
-  console.log('diffContent: ', diffContent);
+  // console.log('diffContent: ', diffContent);
 
   const { data: files } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/files', {
     owner,
