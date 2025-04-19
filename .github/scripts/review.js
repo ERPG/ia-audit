@@ -120,10 +120,19 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
   console.log(`Analyzing file: ${file.filename}`);
 
   // Review all hunks in parallel with retry logic
-  const commentArrays = await Promise.all(hunks.map(h => reviewHunk(h)));
+  const flatComments = await hunks.reduce(
+    (chain, hunk) =>
+      chain.then(async accumulated => {
+        const comments = await reviewHunk(hunk);
+        await sleep(1000);
+        return accumulated.concat(comments);
+      }),
+    Promise.resolve([])
+  );
+
 
   // Flatten and map into GH review format
-  return commentArrays.flat().map(c => ({
+  return flatComments.map(c => ({
     path: file.filename,
     position: c.line,
     body: c.comment
