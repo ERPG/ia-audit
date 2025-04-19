@@ -113,7 +113,7 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
     try {
       const res = await axios.post(
         codeReviewerLlm,
-        { "data": [ diffString, guidelinesString ] },
+        { "data": [ hunk, guidelines ] },
         {
           headers: { 'Content-Type': 'application/json' },
           timeout: 120_000
