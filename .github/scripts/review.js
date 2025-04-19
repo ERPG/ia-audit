@@ -1,0 +1,264 @@
+require('dotenv').config();
+const fs = require('fs');
+const axios = require('axios');
+const path = require('path');
+
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 5000;
+
+const excludedFiles = ['package-lock.json', 'package.json', 'review.js'];
+const fileExtensions = ['js', 'ts', 'jsx', 'tsx'];
+
+const owner = process.env.OWNER;
+const repo = process.env.REPO;
+const prNumber = process.env.PR_NUMBER;
+
+console.log(`Reviewing PR #${prNumber} in ${owner}/${repo}...`);
+
+// Public inference models endpoints
+const codeReviewerLlm = 'https://huggingface.co/spaces/Erpg12/code-reviewer/api/predict';
+const salesForceLlm = 'https://api-inference.huggingface.co/models/Salesforce/codegen-350M-multi';
+const googleLlm = 'https://api-inference.huggingface.co/models/google/flan-t5-base';
+const facebookLlm = 'https://api-inference.huggingface.co/models/facebook/opt-iml-1.3b';
+const openAiLlm = 'https://api-inference.huggingface.co/models/openai/gpt-3.5-turbo';
+
+async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function getDiffPosition(diff, filePath, lineNumber) {
+  const fileDiff = diff.split('diff --git').find(d => d.includes(`b/${filePath}`));
+  if (!fileDiff) return null;
+
+  const lines = fileDiff.split('\n');
+  let position = 0;
+  let currentLine = 0;
+
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      const match = line.match(/@@ -\d+,\d+ \+(\d+)/);
+      if (match) {
+        currentLine = parseInt(match[1], 10) - 1;
+      }
+      position = 1;
+      continue;
+    }
+
+    if (!line.startsWith('-')) {
+      currentLine++;
+    }
+
+    if (currentLine === lineNumber) {
+      return position;
+    }
+
+    position++;
+  }
+  return null;
+};
+
+function getFileDiff(fullDiff, filePath) {
+  const parts = fullDiff.split('diff --git');
+  const chunk = parts.find(d => d.includes(` b/${filePath}`));
+  return chunk ? 'diff --git' + chunk : '';
+};
+
+function chunkDiff(diffText, maxLines = 200) {
+  const lines = diffText.split('\n');
+  const chunks = [];
+  const safeMaxLines = Math.min(maxLines, 50);
+  for (let i = 0; i < lines.length; i += safeMaxLines) {
+    chunks.push(lines.slice(i, i + maxLines).join('\n'));
+  }
+  return chunks;
+};
+
+function extractJsonComments(raw) {
+  console.log('raw: ', raw);
+
+  const start = raw.indexOf('[');
+  const end = raw.lastIndexOf(']') + 1;
+  if (start === -1 || end === 0) {
+    console.error('No JSON array found in model response:', raw);
+    return [];
+  }
+  try {
+    return JSON.parse(raw.slice(start, end));
+  } catch (e) {
+    console.error('Failed to parse JSON after extraction:', raw.slice(start, end));
+    return [];
+  }
+};
+
+async function callHuggingFaceAPI(pr, file, guidelines) {
+  // Extract this file’s diff and split into manageable hunks
+  const fileDiff = getFileDiff(pr.diff, file.filename);
+  const hunks = chunkDiff(fileDiff);
+
+  // Helper to review one hunk with retries
+  const reviewHunk = async (hunk, attempt = 0) => {
+
+    // const prompt = [
+    //   `You are an expert code reviewer.`,
+    //   `Output only a valid JSON array of objects; do NOT wrap it in "return", code fences, or extra quotes.`,
+    //   ``,
+    //   `Diff for ${file.filename}:`,
+    //   `${hunk}`,
+    //   ``,
+    //   `Guidelines:`,
+    //   `${guidelines}`,
+    //   ``,
+    //   `Final output:`,
+    //   `[{"line": 12, "comment": "Example"}]`
+    // ].join('\n');
+
+    try {
+      const res = await axios.post(
+        codeReviewerLlm,
+        { "data": [ hunk, guidelines ] },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 120_000
+        }
+      );
+      console.log('Response: ', res.data);
+      
+      const comments = res.data.data[0] || [];
+      return comments;
+
+    } catch (err) {
+      if (attempt < MAX_RETRIES) {
+        console.log(`Hunk review failed, retry ${attempt + 1}/${MAX_RETRIES}…`);
+        await sleep(RETRY_DELAY);
+        return reviewHunk(hunk, attempt + 1);
+      }
+      console.error(`❌ Hunk failed after ${MAX_RETRIES} attempts:`, err.message);
+      return [];
+    }
+  };
+
+  console.log(`Analyzing file: ${file.filename}`);
+
+  // Review all hunks in parallel with retry logic
+  const flatComments = await hunks.reduce(
+    (chain, hunk) =>
+      chain.then(async accumulated => {
+        const comments = await reviewHunk(hunk);
+        await sleep(1000);
+        return accumulated.concat(comments);
+      }),
+    Promise.resolve([])
+  );
+
+
+  // Flatten and map into GH review format
+  return flatComments.map(c => ({
+    path: file.filename,
+    position: c.line,
+    body: c.comment
+  }));
+};
+
+async function reviewPR() {
+
+  const { Octokit } = await import('@octokit/core');
+  const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+
+  let guidelines = fs.readFileSync('.github/CODE_STYLE.md', 'utf-8');
+  guidelines = guidelines
+    .split('\n')
+    .map(line => line.replace(/^\s*[-*]\s*/, '').trim())
+    .filter(line => line.length > 0)
+    .join('\n');
+
+  const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+    owner,
+    repo,
+    pull_number: prNumber,
+    headers: {
+      'X-GitHub-Api-Version': '2022-11-28'
+    }
+  });
+
+  const diffResponse = await axios.get(pr.diff_url);
+  const diffContent = diffResponse.data;
+  pr.diff = diffContent;
+
+  const { data: files } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/files', {
+    owner,
+    repo,
+    pull_number: prNumber,
+    headers: {
+      'X-GitHub-Api-Version': '2022-11-28'
+    }
+  });
+
+  console.log(`--- Reviewing PR #${prNumber} in ${owner}/${repo} ---`);
+
+  // Sequentially process each file (throttled) via reduce—no Promise.all
+  const reviewComments = await files.reduce(
+    (chain, file) =>
+      chain.then(async accumulated => {
+        console.log(`Processing file: ${file.filename}`);
+
+        const base = path.basename(file.filename);
+        const ext = base.split('.').pop().toLowerCase();
+        if (excludedFiles.includes(base) || !fileExtensions.includes(ext)) {
+          console.log(`Skipping ${file.filename}`);
+          return accumulated;
+        }
+
+        try {
+          const comments = await callHuggingFaceAPI(pr, file, guidelines);
+          await sleep(2000);
+          return accumulated.concat(comments || []);
+        } catch (err) {
+          console.error(`Error on ${file.filename}:`, err.message);
+          return accumulated;
+        }
+      }),
+    Promise.resolve([]) // start with an empty array
+  );
+
+  const validComments = reviewComments.filter(Boolean);
+  console.log('\nReview Summary:');
+  console.log(`- Total files processed: ${files.length}`);
+  console.log(`- Total comments generated: ${validComments.length}`);
+  console.log(`- Comments: ${JSON.stringify(validComments)}`);
+
+  if (validComments.length > 0) {
+    try {
+      await octokit.request('POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
+        owner,
+        repo,
+        pull_number: prNumber,
+        event: 'REQUEST_CHANGES',
+        commit_id: pr.head.sha,
+        body: '🤖 Code review completed. Please address the following comments:',
+        comments: validComments.map(comment => ({
+          path: comment.path,
+          position: getDiffPosition(diffContent, comment.path, comment.position),
+          body: comment.body
+        }))
+      });
+
+      console.log('✅ Review comments posted successfully');
+    } catch (error) {
+      console.error('❌ Failed to post review comments:', error.message);
+      throw error;
+    }
+  } else {
+    console.log('ℹ️ No valid comments to post to the PR');
+  }
+
+  console.log('Review completed.');
+};
+
+(async () => {
+  try {
+    const response = await reviewPR();
+    console.log('reviewPR - Response: ', response);
+  } catch (error) {
+    console.log('reviewPR - error: ', error);
+    console.error(error);
+    process.exit(1);
+  }
+})();
