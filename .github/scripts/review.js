@@ -16,12 +16,11 @@ const prNumber = process.env.PR_NUMBER;
 console.log(`Reviewing PR #${prNumber} in ${owner}/${repo}...`);
 
 // Public inference models endpoints
+// https://api-inference.huggingface.co/models/Salesforce/codegen-350M-multi
 // https://api-inference.huggingface.co/models/google/flan-t5-base
 // https://api-inference.huggingface.co/models/facebook/opt-iml-1.3b
 
-async function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-};
+async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function getDiffPosition(diff, filePath, lineNumber) {
   const fileDiff = diff.split('diff --git').find(d => d.includes(`b/${filePath}`));
@@ -54,80 +53,81 @@ function getDiffPosition(diff, filePath, lineNumber) {
   return null;
 };
 
-async function callHuggingFaceAPI(octokit, pr, file, guidelines, retries = 0) {
-  try {
-    const { data: fileContent } = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
-      owner,
-      repo,
-      path: file.filename,
-      ref: pr.head.sha
-    });
+function getFileDiff(fullDiff, filePath) {
+  const parts = fullDiff.split('diff --git');
+  const chunk = parts.find(d => d.includes(` b/${filePath}`));
+  return chunk ? 'diff --git' + chunk : '';
+};
 
-    const fileText = Buffer.from(fileContent.content, 'base64').toString();
-    console.log(`Analyzing file: ${file.filename}`);
-
-    const response = await axios.post(
-      'https://api-inference.huggingface.co/models/google/flan-t5-base',
-      {
-        inputs: `
-          Review this code and provide specific line-by-line comments:
-
-          ${fileText}
-
-          Guidelines:
-          ${guidelines}
-
-          Provide comments in this format:
-          Line <number>: <comment>
-        `,
-        parameters: {
-          max_length: 1000,
-          temperature: 0.7,
-          top_p: 0.95
-        }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 120000
-      }
-    );
-
-    console.log(`✅ Analysis completed for ${file.filename}`);
-
-    const comments = [];
-    const reviewText = response.data[0].generated_text;
-    
-    console.log(`Review Text: ${reviewText}`);
-
-    const lines = reviewText.split('\n');
-
-    lines.forEach(line => {
-      const match = line.match(/Line (\d+): (.+)/);
-      if (match) {
-        comments.push({
-          path: file.filename,
-          position: parseInt(match[1], 10),
-          body: match[2].trim()
-        });
-      }
-    });
-
-    console.log(`Found ${comments.length} comments for ${file.filename}`);
-
-    return comments;
-
-  } catch (error) {
-    if (retries < MAX_RETRIES) {
-      console.log(`API call failed, retrying in ${RETRY_DELAY / 1000} seconds... (${retries + 1}/${MAX_RETRIES})`);
-      await sleep(RETRY_DELAY);
-      return callHuggingFaceAPI(octokit, pr, file, guidelines, retries + 1);
-    }
-    console.error(`Error processing file ${file.filename}:`, error.message);
-    throw error;
+function chunkDiff(diffText, maxLines = 200) {
+  const lines = diffText.split('\n');
+  const chunks = [];
+  for (let i = 0; i < lines.length; i += maxLines) {
+    chunks.push(lines.slice(i, i + maxLines).join('\n'));
   }
+  return chunks;
+};
+
+async function callHuggingFaceAPI(pr, file, guidelines) {
+  // Extract this file’s diff and split into manageable hunks
+  const fileDiff = getFileDiff(pr.diff, file.filename);
+  const hunks = chunkDiff(fileDiff);
+
+  // Helper to review one hunk with retries
+  const reviewHunk = async (hunk, attempt = 0) => {
+    const prompt = `
+    You are an expert reviewer. Here is a chunk of the git diff for ${file.filename}:
+
+    ${hunk}
+
+    Follow these coding guidelines when you review:
+    
+    ${guidelines}
+    
+    Please return a JSON array like:
+    [
+      {"line": 12, "comment": "Missing initial value for useState."},
+      …
+    ]
+          `;
+    try {
+      const res = await axios.post(
+        'https://api-inference.huggingface.co/models/Salesforce/codegen-350M-multi',
+        { inputs: prompt, parameters: { max_new_tokens: 512, temperature: 0.2 } },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 120000
+        }
+      );
+      const text = Array.isArray(res.data)
+        ? res.data[0].generated_text
+        : res.data.generated_text;
+      return JSON.parse(text);
+    } catch (err) {
+      if (attempt < MAX_RETRIES) {
+        console.log(`Hunk review failed, retry ${attempt + 1}/${MAX_RETRIES}…`);
+        await sleep(RETRY_DELAY);
+        return reviewHunk(hunk, attempt + 1);
+      }
+      console.error(`❌ Hunk failed after ${MAX_RETRIES} attempts:`, err.message);
+      return [];
+    }
+  };
+
+  console.log(`Analyzing file: ${file.filename}`);
+
+  // Review all hunks in parallel with retry logic
+  const commentArrays = await Promise.all(hunks.map(h => reviewHunk(h)));
+
+  // Flatten and map into GH review format
+  return commentArrays.flat().map(c => ({
+    path: file.filename,
+    position: c.line,
+    body: c.comment
+  }));
 };
 
 async function reviewPR() {
@@ -148,6 +148,7 @@ async function reviewPR() {
 
   const diffResponse = await axios.get(pr.diff_url);
   const diffContent = diffResponse.data;
+  pr.diff = diffContent;
 
   console.log('diffContent: ', diffContent);
 
@@ -181,7 +182,7 @@ async function reviewPR() {
       }
 
       try {
-        const comments = await callHuggingFaceAPI(octokit, pr, file, guidelines);
+        const comments = await callHuggingFaceAPI(pr, file, guidelines);
         return comments;
       } catch (error) {
         console.error(`Error processing file ${file.filename}:`, error.message);
