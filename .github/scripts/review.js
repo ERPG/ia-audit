@@ -68,6 +68,23 @@ function chunkDiff(diffText, maxLines = 200) {
   return chunks;
 };
 
+function extractJsonComments(raw) {
+  console.log('raw: ', raw);
+
+  const start = raw.indexOf('[');
+  const end = raw.lastIndexOf(']') + 1;
+  if (start === -1 || end === 0) {
+    console.error('No JSON array found in model response:', raw);
+    return [];
+  }
+  try {
+    return JSON.parse(raw.slice(start, end));
+  } catch (e) {
+    console.error('Failed to parse JSON after extraction:', raw.slice(start, end));
+    return [];
+  }
+};
+
 async function callHuggingFaceAPI(pr, file, guidelines) {
   // Extract this file’s diff and split into manageable hunks
   const fileDiff = getFileDiff(pr.diff, file.filename);
@@ -105,19 +122,15 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
           timeout: 120000
         }
       );
-      
+
       const raw = Array.isArray(res.data)
         ? res.data[0].generated_text
         : res.data.generated_text;
 
-      // Find the JSON array start/end
-      const start = raw.indexOf('[');
-      const end = raw.lastIndexOf(']') + 1;
-      const jsonStr = start !== -1 && end !== -1
-        ? raw.slice(start, end)
-        : raw;
+      console.log('res.data: ', res.data);
 
-      return JSON.parse(jsonStr);
+      // Strictly extract and parse only the JSON array
+      return extractJsonComments(raw);
 
     } catch (err) {
       if (attempt < MAX_RETRIES) {
