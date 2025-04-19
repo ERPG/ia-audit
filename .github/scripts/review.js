@@ -16,6 +16,7 @@ const prNumber = process.env.PR_NUMBER;
 console.log(`Reviewing PR #${prNumber} in ${owner}/${repo}...`);
 
 // Public inference models endpoints
+const codeReviewerLlm = 'https://huggingface.co/spaces/Erpg12/code-reviewer/api/predict';
 const salesForceLlm = 'https://api-inference.huggingface.co/models/Salesforce/codegen-350M-multi';
 const googleLlm = 'https://api-inference.huggingface.co/models/google/flan-t5-base';
 const facebookLlm = 'https://api-inference.huggingface.co/models/facebook/opt-iml-1.3b';
@@ -95,24 +96,26 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
   // Helper to review one hunk with retries
   const reviewHunk = async (hunk, attempt = 0) => {
 
-    const prompt = [
-      `You are an expert code reviewer.`,
-      `Output only a valid JSON array of objects; do NOT wrap it in "return", code fences, or extra quotes.`,
-      ``,
-      `Diff for ${file.filename}:`,
-      `${hunk}`,
-      ``,
-      `Guidelines:`,
-      `${guidelines}`,
-      ``,
-      `Final output:`,
-      `[{"line": 12, "comment": "Example"}]`
-    ].join('\n');
+    // const prompt = [
+    //   `You are an expert code reviewer.`,
+    //   `Output only a valid JSON array of objects; do NOT wrap it in "return", code fences, or extra quotes.`,
+    //   ``,
+    //   `Diff for ${file.filename}:`,
+    //   `${hunk}`,
+    //   ``,
+    //   `Guidelines:`,
+    //   `${guidelines}`,
+    //   ``,
+    //   `Final output:`,
+    //   `[{"line": 12, "comment": "Example"}]`
+    // ].join('\n');
 
     try {
       const res = await axios.post(
-        googleLlm,
-        { inputs: prompt, parameters: { max_length: 512, temperature: 0.2, stop: ["Final output:"] } },
+        codeReviewerLlm,
+        {
+          data: [hunk, guidelines]
+        },
         {
           headers: {
             Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
@@ -121,16 +124,9 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
           timeout: 120000
         }
       );
-
-      const raw = Array.isArray(res.data)
-        ? res.data[0].generated_text
-        : res.data.generated_text;
-
-      console.log('res.data: ', res.data);
-      console.log('raw: ', raw);
-
-      // Strictly extract and parse only the JSON array
-      return extractJsonComments(raw);
+      console.log('Response: ', res.data);
+      
+      return res.data.data[0] || [];
 
     } catch (err) {
       if (attempt < MAX_RETRIES) {
