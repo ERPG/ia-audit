@@ -99,6 +99,9 @@ async function callHuggingFaceAPI(octokit, pr, file, guidelines, retries = 0) {
 
     const comments = [];
     const reviewText = response.data[0].generated_text;
+    
+    console.log(`Review Text: ${reviewText}`);
+
     const lines = reviewText.split('\n');
 
     lines.forEach(line => {
