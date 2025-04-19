@@ -16,8 +16,8 @@ const prNumber = process.env.PR_NUMBER;
 console.log(`Reviewing PR #${prNumber} in ${owner}/${repo}...`);
 
 // Public inference models endpoints
-// https://api-inference.huggingface.co/models/Salesforce/codegen-350M-multi
-// https://api-inference.huggingface.co/models/google/flan-t5-base
+const salesForceLlm = 'https://api-inference.huggingface.co/models/Salesforce/codegen-350M-multi';
+const googleLlm = 'https://api-inference.huggingface.co/models/google/flan-t5-base';
 // https://api-inference.huggingface.co/models/facebook/opt-iml-1.3b
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -92,6 +92,7 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
 
   // Helper to review one hunk with retries
   const reviewHunk = async (hunk, attempt = 0) => {
+
     const prompt = [
       `You are an expert code reviewer.`,
       `Output only a valid JSON array of objects; do NOT wrap it in "return", code fences, or extra quotes.`,
@@ -108,8 +109,8 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
 
     try {
       const res = await axios.post(
-        'https://api-inference.huggingface.co/models/Salesforce/codegen-350M-multi',
-        { inputs: prompt, parameters: { max_new_tokens: 512, temperature: 0.2 } },
+        googleLlm,
+        { inputs: prompt, parameters: { max_new_tokens: 512, temperature: 0.2, stop: ["Final output:"] } },
         {
           headers: {
             Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
