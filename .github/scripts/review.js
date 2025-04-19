@@ -128,6 +128,7 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
         : res.data.generated_text;
 
       console.log('res.data: ', res.data);
+      console.log('raw: ', raw);
 
       // Strictly extract and parse only the JSON array
       return extractJsonComments(raw);
@@ -170,7 +171,12 @@ async function reviewPR() {
   const { Octokit } = await import('@octokit/core');
   const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 
-  const guidelines = fs.readFileSync('.github/CODE_STYLE.md', 'utf-8');
+  let guidelines = fs.readFileSync('.github/CODE_STYLE.md', 'utf-8');
+  guidelines = guidelines
+    .split('\n')
+    .map(line => line.replace(/^\s*[-*]\s*/, '').trim())
+    .filter(line => line.length > 0)
+    .join('\n');
 
   const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
     owner,
