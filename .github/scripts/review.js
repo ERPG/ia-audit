@@ -113,20 +113,16 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
     try {
       const res = await axios.post(
         codeReviewerLlm,
+        { "data": [ diffString, guidelinesString ] },
         {
-          data: [hunk, guidelines]
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 120000
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 120_000
         }
       );
       console.log('Response: ', res.data);
       
-      return res.data.data[0] || [];
+      const comments = res.data.data[0] || [];
+      return comments;
 
     } catch (err) {
       if (attempt < MAX_RETRIES) {
