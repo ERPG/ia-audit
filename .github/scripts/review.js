@@ -18,7 +18,8 @@ console.log(`Reviewing PR #${prNumber} in ${owner}/${repo}...`);
 // Public inference models endpoints
 const salesForceLlm = 'https://api-inference.huggingface.co/models/Salesforce/codegen-350M-multi';
 const googleLlm = 'https://api-inference.huggingface.co/models/google/flan-t5-base';
-// https://api-inference.huggingface.co/models/facebook/opt-iml-1.3b
+const facebookLlm = 'https://api-inference.huggingface.co/models/facebook/opt-iml-1.3b';
+const openAiLlm = 'https://api-inference.huggingface.co/models/openai/gpt-3.5-turbo';
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -62,7 +63,8 @@ function getFileDiff(fullDiff, filePath) {
 function chunkDiff(diffText, maxLines = 200) {
   const lines = diffText.split('\n');
   const chunks = [];
-  for (let i = 0; i < lines.length; i += maxLines) {
+  const safeMaxLines = Math.min(maxLines, 50);
+  for (let i = 0; i < lines.length; i += safeMaxLines) {
     chunks.push(lines.slice(i, i + maxLines).join('\n'));
   }
   return chunks;
@@ -110,7 +112,7 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
     try {
       const res = await axios.post(
         googleLlm,
-        { inputs: prompt, parameters: { max_new_tokens: 512, temperature: 0.2, stop: ["Final output:"] } },
+        { inputs: prompt, parameters: { max_length: 512, temperature: 0.2, stop: ["Final output:"] } },
         {
           headers: {
             Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
