@@ -92,24 +92,20 @@ async function callHuggingFaceAPI(pr, file, guidelines) {
 
   // Helper to review one hunk with retries
   const reviewHunk = async (hunk, attempt = 0) => {
-    const prompt = `
-      You are an expert code reviewer.
-      **Strictly** output _only_ a JSON array of comments—no explanation, no extra text.
+    const prompt = [
+      `You are an expert code reviewer.`,
+      `Output only a valid JSON array of objects; do NOT wrap it in "return", code fences, or extra quotes.`,
+      ``,
+      `Diff for ${file.filename}:`,
+      `${hunk}`,
+      ``,
+      `Guidelines:`,
+      `${guidelines}`,
+      ``,
+      `Final output:`,
+      `[{"line": 12, "comment": "Example"}]`
+    ].join('\n');
 
-      Here is a chunk of the git diff for ${file.filename}:
-
-      ${hunk}
-
-      Follow these coding guidelines when you review:
-
-      ${guidelines}
-
-      **Output format**:
-      [
-        {"line": 12, "comment": "Missing initial value for useState."},
-        …
-      ]
-    `;
     try {
       const res = await axios.post(
         'https://api-inference.huggingface.co/models/Salesforce/codegen-350M-multi',
@@ -191,8 +187,6 @@ async function reviewPR() {
   const diffContent = diffResponse.data;
   pr.diff = diffContent;
 
-  // console.log('diffContent: ', diffContent);
-
   const { data: files } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/files', {
     owner,
     repo,
@@ -204,36 +198,32 @@ async function reviewPR() {
 
   console.log(`--- Reviewing PR #${prNumber} in ${owner}/${repo} ---`);
 
-  const reviewComments = await Promise.all(
-    files.map(async (file, index) => {
-      console.log(`Processing file #${index + 1}: ${file.filename}`);
+  // Sequentially process each file (throttled) via reduce—no Promise.all
+  const reviewComments = await files.reduce(
+    (chain, file) =>
+      chain.then(async accumulated => {
+        console.log(`Processing file: ${file.filename}`);
 
-      const filename = file.filename;
-      const base = path.basename(filename);
+        const base = path.basename(file.filename);
+        const ext = base.split('.').pop().toLowerCase();
+        if (excludedFiles.includes(base) || !fileExtensions.includes(ext)) {
+          console.log(`Skipping ${file.filename}`);
+          return accumulated;
+        }
 
-      if (excludedFiles.includes(filename) || excludedFiles.includes(base)) {
-        console.log(`File ${filename} is excluded from review.`);
-        return null;
-      }
-
-      const fileExt = file.filename.split('.').pop().toLowerCase();
-      if (!fileExtensions.includes(fileExt)) {
-        console.log(`File ${file.filename} has unsupported extension: ${fileExt}`);
-        return null;
-      }
-
-      try {
-        const comments = await callHuggingFaceAPI(pr, file, guidelines);
-        return comments;
-      } catch (error) {
-        console.error(`Error processing file ${file.filename}:`, error.message);
-        return null;
-      }
-
-    })
+        try {
+          const comments = await callHuggingFaceAPI(pr, file, guidelines);
+          await sleep(2000);
+          return accumulated.concat(comments || []);
+        } catch (err) {
+          console.error(`Error on ${file.filename}:`, err.message);
+          return accumulated;
+        }
+      }),
+    Promise.resolve([]) // start with an empty array
   );
 
-  const validComments = reviewComments.filter(Boolean).flat();
+  const validComments = reviewComments.filter(Boolean);
   console.log('\nReview Summary:');
   console.log(`- Total files processed: ${files.length}`);
   console.log(`- Total comments generated: ${validComments.length}`);
